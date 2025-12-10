@@ -1,8 +1,26 @@
 # Data directory (contains ChromaDB data)
 data/
 
+# Rust build artifacts
+target/
+indexer/target/
+Cargo.lock
+*.rlib
+*.rmeta
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Docker
+*.log
+
 # OS files
 .DS_Store
+Thumbs.db
 
 # Editor files
 *.swp
@@ -10,7 +28,15 @@ data/
 *~
 .vscode/
 .idea/
+*.sublime-*
 
+# Claude Code
 .claude
+
+# Node
 **/node_modules
+
+# Environment
 .env
+.env.local
+.env.*.local

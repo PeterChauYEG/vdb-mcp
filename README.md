@@ -173,3 +173,7 @@ This means the indexer is universal - it works with any codebase without customi
 ## Known Issues
 
 < 0.1% of files may re-index on every run (harmless ChromaDB quirk with floating-point metadata). 99.9%+ of files correctly skip when unchanged.
+
+docker compose build indexer --no-cache
+rm -rf ./data/chroma
+./setup ~/src/laboratory-one/ro/bot

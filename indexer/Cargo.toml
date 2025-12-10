@@ -1,0 +1,27 @@
+[package]
+name = "indexer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+sha2 = "0.10"
+walkdir = "2.5"
+hex = "0.4"
+
+# HTTP client for ChromaDB and TEI
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Gitignore parsing
+ignore = "0.4.23"
+
+# Parallel processing
+rayon = "1.10"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"

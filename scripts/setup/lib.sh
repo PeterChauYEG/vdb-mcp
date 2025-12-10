@@ -118,7 +118,23 @@ EOF
 start_indexing() {
     local project_root="$(cd "$SCRIPT_DIR" && pwd)"
 
-    (cd "$project_root" && docker compose up -d > /dev/null 2>&1)
+    # Ensure data directory exists with proper permissions
+    mkdir -p "$project_root/data/chroma"
+    chmod 777 "$project_root/data/chroma" 2>/dev/null || true
+
+    # Stop any existing containers first
+    (cd "$project_root" && docker compose --profile index down > /dev/null 2>&1)
+
+    # Start ChromaDB and embedding service first
+    (cd "$project_root" && docker compose up -d chromadb > /dev/null 2>&1)
+    (cd "$project_root" && docker compose --profile index up -d embedding > /dev/null 2>&1)
+
+    # Wait for services to be ready
+    print_info "Waiting for ChromaDB and embedding service to be ready..."
+    sleep 15
+
+    # Start indexer
+    (cd "$project_root" && docker compose --profile index up -d indexer > /dev/null 2>&1)
     return $?
 }
 
@@ -152,26 +168,48 @@ wait_for_indexing() {
         if ! docker ps --format "{{.Names}}" | grep -q "vector-mcp-indexer"; then
             # Container exited - check if it was successful
             local exit_code=$(docker inspect vector-mcp-indexer --format='{{.State.ExitCode}}' 2>/dev/null || echo "1")
+            local logs=$(docker logs vector-mcp-indexer 2>&1)
 
             if [ "$exit_code" = "0" ]; then
-                # Success - check logs for completion message
-                local logs=$(docker logs vector-mcp-indexer 2>&1)
-                if echo "$logs" | grep -q "✅ Indexing complete"; then
-                    echo ""
+                echo ""
+
+                # Check if it was already indexed (skipped)
+                if echo "$logs" | grep -q "already indexed, skipping"; then
+                    print_success "Already indexed - no changes detected"
+                    local branch=$(echo "$logs" | grep "Git branch:" | sed 's/.*: //')
+                    local commit=$(echo "$logs" | grep "Git commit:" | sed 's/.*: //')
+                    local chunks=$(echo "$logs" | grep "Total chunks:" | sed 's/.*: //')
+                    [ -n "$branch" ] && print_info "Branch: $branch"
+                    [ -n "$commit" ] && print_info "Commit: $commit"
+                    [ -n "$chunks" ] && print_info "Total chunks: $chunks"
+                    return 0
+                fi
+
+                # Check for completion message
+                if echo "$logs" | grep -qE "Indexing complete!|✅ Indexing complete"; then
                     print_success "Indexing complete!"
 
-                    # Extract document count
-                    local doc_count=$(echo "$logs" | grep "Total documents in collection:" | tail -1 | sed -n 's/.*Total documents in collection: \([0-9]*\).*/\1/p')
-                    if [ -n "$doc_count" ]; then
-                        print_info "Indexed $doc_count code chunks"
-                    fi
+                    # Extract stats
+                    local files=$(echo "$logs" | grep "Found .* total files" | sed -n 's/Found \([0-9]*\) total files/\1/p')
+                    local chunks=$(echo "$logs" | grep "Total chunks:" | sed 's/.*: //')
+                    local generated=$(echo "$logs" | grep "Generated .* chunks" | sed -n 's/Generated \([0-9]*\) chunks.*/\1/p')
+
+                    [ -n "$files" ] && print_info "Files processed: $files"
+                    [ -n "$generated" ] && print_info "Chunks generated: $generated"
+                    [ -n "$chunks" ] && print_info "Total chunks in DB: $chunks"
                     return 0
-                else
-                    print_warning "Indexer exited but completion message not found"
-                    return 1
                 fi
+
+                # Exit 0 but no recognized message - show summary from logs
+                print_success "Indexer completed"
+                local chunks=$(echo "$logs" | grep "Total chunks:" | sed 's/.*: //')
+                [ -n "$chunks" ] && print_info "Total chunks: $chunks"
+                return 0
             else
                 print_error "Indexer failed with exit code: $exit_code"
+                echo ""
+                print_info "Last 20 lines of logs:"
+                echo "$logs" | tail -20
                 return 1
             fi
         fi
@@ -182,23 +220,14 @@ wait_for_indexing() {
         # Show progress updates
         if [ "$current_line" != "$last_line" ]; then
             # Check for completion
-            if echo "$current_line" | grep -q "✅ Indexing complete"; then
-                # Wait a moment for container to exit
+            if echo "$current_line" | grep -qE "Indexing complete!|already indexed"; then
                 sleep 2
-                echo ""
-                print_success "Indexing complete!"
-
-                # Extract document count if available (portable sed approach)
-                local doc_count=$(echo "$current_line" | sed -n 's/.*Total documents in collection: \([0-9]*\).*/\1/p')
-                if [ -n "$doc_count" ]; then
-                    print_info "Indexed $doc_count code chunks"
-                fi
-                return 0
+                continue  # Let the exit handler deal with it
             fi
 
             # Show progress lines
-            if echo "$current_line" | grep -qE "Progress:|Found|Skipping|Loading|Scanned"; then
-                echo -ne "\r\033[K$current_line"
+            if echo "$current_line" | grep -qE "Found|Processed|Generated|Embedding|batch"; then
+                echo -ne "\r\033[K   $current_line"
             fi
 
             last_line="$current_line"
@@ -212,6 +241,14 @@ wait_for_indexing() {
     print_warning "Indexing timeout (${timeout}s) - still running in background"
     print_info "Check status: docker logs vector-mcp-indexer"
     return 1
+}
+
+cleanup_indexing_services() {
+    local project_root="$(cd "$SCRIPT_DIR" && pwd)"
+
+    # Stop embedding and indexer containers (keep chromadb running for MCP)
+    (cd "$project_root" && docker compose --profile index stop embedding indexer > /dev/null 2>&1)
+    (cd "$project_root" && docker compose --profile index rm -f embedding indexer > /dev/null 2>&1)
 }
 
 # ============================================================================
@@ -315,13 +352,42 @@ PYEOF
 # Git Hooks
 # ============================================================================
 
+# Hook version - increment when hook content changes
+HOOK_VERSION="3"
+
+hooks_need_update() {
+    local codebase_path="$1"
+
+    for hook_name in post-commit post-merge post-checkout; do
+        local hook_path="$codebase_path/.git/hooks/$hook_name"
+
+        # No hook exists
+        if [ ! -f "$hook_path" ]; then
+            return 0
+        fi
+
+        # Check if it's our hook and if version matches
+        if grep -q "Auto-generated by vector-mcp" "$hook_path" 2>/dev/null; then
+            local current_version=$(grep "HOOK_VERSION=" "$hook_path" 2>/dev/null | sed 's/.*HOOK_VERSION=//' | tr -d '"')
+            if [ "$current_version" != "$HOOK_VERSION" ]; then
+                return 0
+            fi
+        else
+            # Not our hook - needs handling
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 install_git_hooks() {
     local codebase_path="$1"
     local project_root="$(cd "$SCRIPT_DIR" && pwd)"
 
     local hooks_installed=0
 
-    for hook_name in post-commit post-merge; do
+    for hook_name in post-commit post-merge post-checkout; do
         local hook_path="$codebase_path/.git/hooks/$hook_name"
 
         # Handle existing hooks
@@ -340,6 +406,7 @@ install_git_hooks() {
         print_info "Installed $hooks_installed git hooks"
         print_info "• post-commit: Re-indexes after commits"
         print_info "• post-merge: Re-indexes after git pull"
+        print_info "• post-checkout: Re-indexes after branch switch"
         return 0
     else
         return 1
@@ -353,9 +420,17 @@ handle_existing_hook() {
 
     # Check if already has vector-mcp
     if grep -q "Auto-generated by vector-mcp" "$hook_path" 2>/dev/null; then
-        # Check if it's pure vector-mcp hook
+        # Check version
+        local current_version=$(grep "HOOK_VERSION=" "$hook_path" 2>/dev/null | sed 's/.*HOOK_VERSION=//' | tr -d '"')
+
+        if [ "$current_version" = "$HOOK_VERSION" ]; then
+            # Already up to date
+            return 1
+        fi
+
+        # Check if it's pure vector-mcp hook (safe to overwrite)
         local total_lines=$(wc -l < "$hook_path")
-        local vmp_lines=$(grep -c "vector-mcp\|MCP_ROOT\|Re-indexing" "$hook_path" 2>/dev/null || echo 0)
+        local vmp_lines=$(grep -c "vector-mcp\|MCP_ROOT\|Re-indexing\|HOOK_VERSION" "$hook_path" 2>/dev/null || echo 0)
 
         if [ "$vmp_lines" -gt $((total_lines - 5)) ]; then
             # Pure vector-mcp hook - update it
@@ -363,9 +438,9 @@ handle_existing_hook() {
             print_info "Updated $hook_name hook"
             return 0
         else
-            # Mixed hook - keep it
-            print_info "$hook_name already configured"
-            return 0
+            # Mixed hook - keep it but warn
+            print_info "$hook_name has custom code, skipping update"
+            return 1
         fi
     else
         # Non-vector-mcp hook found
@@ -384,13 +459,22 @@ handle_existing_hook() {
 
 # ========================================
 # Auto-generated by vector-mcp
+# HOOK_VERSION=$HOOK_VERSION
 # Added: $(date)
 # ========================================
 
 MCP_ROOT="$project_root"
 if [ -d "\$MCP_ROOT" ]; then
     echo "🔄 Vector MCP: Re-indexing..."
-    (cd "\$MCP_ROOT" && docker compose up -d > /dev/null 2>&1 &)
+    # Update git hash/branch in .env before starting indexer
+    NEW_HASH=\$(git rev-parse HEAD)
+    NEW_BRANCH=\$(git rev-parse --abbrev-ref HEAD)
+    if [ -f "\$MCP_ROOT/.env" ]; then
+        sed -i.bak "s/^GIT_HASH=.*/GIT_HASH=\$NEW_HASH/" "\$MCP_ROOT/.env"
+        sed -i.bak "s/^GIT_BRANCH=.*/GIT_BRANCH=\$NEW_BRANCH/" "\$MCP_ROOT/.env"
+        rm -f "\$MCP_ROOT/.env.bak"
+    fi
+    (cd "\$MCP_ROOT" && docker compose up -d chromadb && docker compose --profile index up -d embedding indexer > /dev/null 2>&1 &)
 fi
 EOHOOK
 
@@ -410,12 +494,23 @@ create_git_hook() {
     cat > "$hook_path" << EOF
 #!/bin/bash
 # Auto-generated by vector-mcp - Re-index after git operations
+# HOOK_VERSION=$HOOK_VERSION
 # This file is git-ignored and local to your machine
 
 MCP_ROOT="$project_root"
 
 echo "🔄 Vector MCP: Re-indexing codebase..."
-(cd "\$MCP_ROOT" && docker compose up -d > /dev/null 2>&1 &)
+
+# Update git hash/branch in .env before starting indexer
+NEW_HASH=\$(git rev-parse HEAD)
+NEW_BRANCH=\$(git rev-parse --abbrev-ref HEAD)
+if [ -f "\$MCP_ROOT/.env" ]; then
+    sed -i.bak "s/^GIT_HASH=.*/GIT_HASH=\$NEW_HASH/" "\$MCP_ROOT/.env"
+    sed -i.bak "s/^GIT_BRANCH=.*/GIT_BRANCH=\$NEW_BRANCH/" "\$MCP_ROOT/.env"
+    rm -f "\$MCP_ROOT/.env.bak"
+fi
+
+(cd "\$MCP_ROOT" && docker compose up -d chromadb && docker compose --profile index up -d embedding indexer > /dev/null 2>&1 &)
 EOF
 
     chmod +x "$hook_path"

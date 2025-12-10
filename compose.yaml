@@ -17,24 +17,43 @@ services:
       timeout: 5s
       retries: 5
 
+  # Fast embedding server using sentence-transformers
+  embedding:
+    build:
+      context: ./embedding-server
+      dockerfile: Dockerfile
+    container_name: vector-mcp-embedding
+    ports:
+      - "8081:8080"
+    environment:
+      - MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    profiles: ["index"]
+
   indexer:
     build:
       context: .
-      dockerfile: Dockerfile.indexer
+      dockerfile: Dockerfile.indexer.rust
     container_name: vector-mcp-indexer
     depends_on:
       chromadb:
+        condition: service_healthy
+      embedding:
         condition: service_healthy
     volumes:
       # Mount codebase from .env configuration
       - ${CODEBASE_PATH}:/codebase:ro
     environment:
-      - CHROMA_HOST=chromadb
-      - CHROMA_PORT=8000
-      - COLLECTION_NAME=${COLLECTION_NAME}
       - GIT_HASH=${GIT_HASH}
       - GIT_BRANCH=${GIT_BRANCH}
-    command: ["/codebase", "--host", "chromadb", "--collection", "${COLLECTION_NAME}"]
+      - TEI_URL=http://embedding:8080
+    command: ["--directory", "/codebase", "--host", "chromadb", "--collection", "${COLLECTION_NAME:-codebase}"]
+    profiles: ["index"]
 
   mcp-server:
     build:
@@ -45,3 +64,5 @@ services:
     # Note: This service is built but not run by compose
     # Claude Code will run it via mcp-server.sh wrapper
     profiles: ["build-only"]
+
+volumes: {}

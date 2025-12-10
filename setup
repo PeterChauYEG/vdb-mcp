@@ -54,6 +54,8 @@ main() {
 
         # Wait for indexing to complete
         if wait_for_indexing; then
+            # Cleanup indexing services (keep chromadb for MCP)
+            cleanup_indexing_services
             echo ""
         else
             print_info "Indexing continues in background"
@@ -74,26 +76,31 @@ main() {
         exit 1
     fi
 
-    # Step 5: Optional git hooks
+    # Step 5: Git hooks (auto-reindex on commit/pull/branch switch)
     if [ -d "$abs_path/.git" ]; then
-        print_step "5" "Git Hooks (Optional)"
-        echo ""
-        echo "Install git hooks to auto-reindex after pull/commit?"
-        echo ""
-        read -p "Install hooks? (y/N) " -n 1 -r
-        echo ""
+        print_step "5" "Git Hooks"
 
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if install_git_hooks "$abs_path"; then
-                echo ""
-                print_success "Git hooks installed!"
+        if hooks_need_update "$abs_path"; then
+            echo ""
+            echo "Install git hooks to auto-reindex after commit/pull/branch switch?"
+            echo ""
+            read -p "Install hooks? (y/N) " -n 1 -r
+            echo ""
+
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                if install_git_hooks "$abs_path"; then
+                    echo ""
+                    print_success "Git hooks installed!"
+                else
+                    echo ""
+                    print_warning "Some hooks could not be installed"
+                fi
             else
                 echo ""
-                print_warning "Some hooks could not be installed"
+                print_info "Skipped (run setup again to install later)"
             fi
         else
-            echo ""
-            print_info "Skipped git hooks (you'll need to manually run 'docker compose up -d' to re-index)"
+            print_success "Git hooks already up to date"
         fi
         echo ""
     fi
