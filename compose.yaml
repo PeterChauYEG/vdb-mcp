@@ -1,0 +1,47 @@
+services:
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: vector-mcp-chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/chroma:/data
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+      - ALLOW_RESET=TRUE
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  indexer:
+    build:
+      context: .
+      dockerfile: Dockerfile.indexer
+    container_name: vector-mcp-indexer
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    volumes:
+      # Mount codebase from .env configuration
+      - ${CODEBASE_PATH}:/codebase:ro
+    environment:
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - COLLECTION_NAME=${COLLECTION_NAME}
+      - GIT_HASH=${GIT_HASH}
+      - GIT_BRANCH=${GIT_BRANCH}
+    command: ["/codebase", "--host", "chromadb", "--collection", "${COLLECTION_NAME}"]
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    image: vector-mcp-server:latest
+    container_name: vector-mcp-server
+    # Note: This service is built but not run by compose
+    # Claude Code will run it via mcp-server.sh wrapper
+    profiles: ["build-only"]

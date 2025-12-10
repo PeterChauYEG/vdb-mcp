@@ -1,0 +1,123 @@
+#!/bin/bash
+# Vector MCP Setup - One command to rule them all
+# Usage: ./setup /path/to/codebase
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/scripts/setup/lib.sh"
+
+# ============================================================================
+# Main Setup Flow
+# ============================================================================
+
+main() {
+    print_header "Vector MCP Setup"
+
+    # Validate arguments
+    if [ $# -eq 0 ]; then
+        print_error "Missing codebase path"
+        echo ""
+        echo "Usage: ./setup /path/to/codebase"
+        echo ""
+        echo "Example: ./setup ~/src/my-project"
+        exit 1
+    fi
+
+    local codebase_path="$1"
+
+    # Step 1: Validate and configure
+    print_step "1" "Validating codebase"
+    validate_codebase "$codebase_path"
+    local abs_path=$(get_absolute_path "$codebase_path")
+    local collection_name=$(get_collection_name "$abs_path")
+    local git_hash=$(get_git_hash "$abs_path")
+    local git_branch=$(get_git_branch "$abs_path")
+
+    print_info "Codebase:   $abs_path"
+    print_info "Collection: $collection_name"
+    [ -n "$git_hash" ] && print_info "Git Hash:   ${git_hash:0:8}"
+    [ -n "$git_branch" ] && print_info "Git Branch: $git_branch"
+    echo ""
+
+    # Step 2: Create .env file
+    print_step "2" "Creating configuration"
+    create_env_file "$abs_path" "$collection_name" "$git_hash" "$git_branch"
+    print_success "Configuration saved to .env"
+    echo ""
+
+    # Step 3: Start indexing
+    print_step "3" "Starting ChromaDB and indexer"
+    if start_indexing; then
+        print_success "Indexing started"
+        echo ""
+
+        # Wait for indexing to complete
+        if wait_for_indexing; then
+            echo ""
+        else
+            print_info "Indexing continues in background"
+            echo ""
+        fi
+    else
+        print_warning "Indexing may have issues - check 'docker ps'"
+        echo ""
+    fi
+
+    # Step 4: Configure Claude Code
+    print_step "4" "Configuring Claude Code"
+    if configure_claude "$abs_path" "$collection_name" "$git_hash"; then
+        print_success "Claude Code configured!"
+        echo ""
+    else
+        print_error "Claude Code configuration failed"
+        exit 1
+    fi
+
+    # Step 5: Optional git hooks
+    if [ -d "$abs_path/.git" ]; then
+        print_step "5" "Git Hooks (Optional)"
+        echo ""
+        echo "Install git hooks to auto-reindex after pull/commit?"
+        echo ""
+        read -p "Install hooks? (y/N) " -n 1 -r
+        echo ""
+
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if install_git_hooks "$abs_path"; then
+                echo ""
+                print_success "Git hooks installed!"
+            else
+                echo ""
+                print_warning "Some hooks could not be installed"
+            fi
+        else
+            echo ""
+            print_info "Skipped git hooks (you'll need to manually run 'docker compose up -d' to re-index)"
+        fi
+        echo ""
+    fi
+
+    # Done!
+    print_header "Setup Complete!"
+    echo ""
+    echo "📍 Locations:"
+    echo "   • Vector MCP:  $SCRIPT_DIR"
+    echo "   • Codebase:    $abs_path"
+    echo "   • MCP Config:  $abs_path/.mcp.json"
+    echo ""
+    echo "🔄 Next Steps:"
+    echo "   1. Restart Claude Code (quit and reopen)"
+    echo "   2. Navigate to: $abs_path"
+    echo "   3. Try: 'How many files are indexed?'"
+    echo ""
+    echo "💡 Available MCP tools:"
+    echo "   • query - Find any code semantically"
+    echo "   • trace_path - How do I navigate to X?"
+    echo "   • find_reproduction - How to reproduce a bug?"
+    echo "   • map_dependencies - What imports what?"
+    echo "   • And 3 more tools!"
+    echo ""
+}
+
+main "$@"

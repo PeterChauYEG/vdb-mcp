@@ -1,0 +1,16 @@
+# Data directory (contains ChromaDB data)
+data/
+
+# OS files
+.DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+.claude
+**/node_modules
+.env
