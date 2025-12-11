@@ -140,20 +140,17 @@ start_indexing() {
 
 wait_for_indexing() {
     local project_root="$(cd "$SCRIPT_DIR" && pwd)"
-    local timeout=600  # 10 minutes max
-    local elapsed=0
-    local check_interval=2
 
-    print_info "Waiting for indexing to complete..."
-    echo ""
+    print_info "Waiting for indexer to start..."
 
-    # Wait for indexer container to start or complete
-    while [ $elapsed -lt 30 ]; do
+    # Wait for indexer container to exist
+    local waited=0
+    while [ $waited -lt 30 ]; do
         if docker ps -a --format "{{.Names}}" | grep -q "vector-mcp-indexer"; then
             break
         fi
         sleep 1
-        elapsed=$((elapsed + 1))
+        waited=$((waited + 1))
     done
 
     if ! docker ps -a --format "{{.Names}}" | grep -q "vector-mcp-indexer"; then
@@ -161,86 +158,29 @@ wait_for_indexing() {
         return 1
     fi
 
-    # Monitor logs for completion
-    local last_line=""
-    while [ $elapsed -lt $timeout ]; do
-        # Check if container has exited
-        if ! docker ps --format "{{.Names}}" | grep -q "vector-mcp-indexer"; then
-            # Container exited - check if it was successful
-            local exit_code=$(docker inspect vector-mcp-indexer --format='{{.State.ExitCode}}' 2>/dev/null || echo "1")
-            local logs=$(docker logs vector-mcp-indexer 2>&1)
+    echo ""
+    print_info "Indexing progress:"
+    echo ""
 
-            if [ "$exit_code" = "0" ]; then
-                echo ""
-
-                # Check if it was already indexed (skipped)
-                if echo "$logs" | grep -q "already indexed, skipping"; then
-                    print_success "Already indexed - no changes detected"
-                    local branch=$(echo "$logs" | grep "Git branch:" | sed 's/.*: //')
-                    local commit=$(echo "$logs" | grep "Git commit:" | sed 's/.*: //')
-                    local chunks=$(echo "$logs" | grep "Total chunks:" | sed 's/.*: //')
-                    [ -n "$branch" ] && print_info "Branch: $branch"
-                    [ -n "$commit" ] && print_info "Commit: $commit"
-                    [ -n "$chunks" ] && print_info "Total chunks: $chunks"
-                    return 0
-                fi
-
-                # Check for completion message
-                if echo "$logs" | grep -qE "Indexing complete!|✅ Indexing complete"; then
-                    print_success "Indexing complete!"
-
-                    # Extract stats
-                    local files=$(echo "$logs" | grep "Found .* total files" | sed -n 's/Found \([0-9]*\) total files/\1/p')
-                    local chunks=$(echo "$logs" | grep "Total chunks:" | sed 's/.*: //')
-                    local generated=$(echo "$logs" | grep "Generated .* chunks" | sed -n 's/Generated \([0-9]*\) chunks.*/\1/p')
-
-                    [ -n "$files" ] && print_info "Files processed: $files"
-                    [ -n "$generated" ] && print_info "Chunks generated: $generated"
-                    [ -n "$chunks" ] && print_info "Total chunks in DB: $chunks"
-                    return 0
-                fi
-
-                # Exit 0 but no recognized message - show summary from logs
-                print_success "Indexer completed"
-                local chunks=$(echo "$logs" | grep "Total chunks:" | sed 's/.*: //')
-                [ -n "$chunks" ] && print_info "Total chunks: $chunks"
-                return 0
-            else
-                print_error "Indexer failed with exit code: $exit_code"
-                echo ""
-                print_info "Last 20 lines of logs:"
-                echo "$logs" | tail -20
-                return 1
-            fi
+    # Stream logs until container exits
+    docker logs -f vector-mcp-indexer 2>&1 | while IFS= read -r line; do
+        # Show all meaningful output
+        if echo "$line" | grep -qE "^===|Directory:|Collection:|Git |Connecting|Created|Using existing|Scanning|Found|Processing|Processed|Generated|Embedding|batch|Total|Branch|Commit|already indexed|TEI|Indexing"; then
+            echo "   $line"
         fi
-
-        # Get latest log line
-        local current_line=$(docker logs vector-mcp-indexer 2>&1 | tail -1)
-
-        # Show progress updates
-        if [ "$current_line" != "$last_line" ]; then
-            # Check for completion
-            if echo "$current_line" | grep -qE "Indexing complete!|already indexed"; then
-                sleep 2
-                continue  # Let the exit handler deal with it
-            fi
-
-            # Show progress lines
-            if echo "$current_line" | grep -qE "Found|Processed|Generated|Embedding|batch"; then
-                echo -ne "\r\033[K   $current_line"
-            fi
-
-            last_line="$current_line"
-        fi
-
-        sleep $check_interval
-        elapsed=$((elapsed + check_interval))
     done
 
+    # Check exit status
+    local exit_code=$(docker inspect vector-mcp-indexer --format='{{.State.ExitCode}}' 2>/dev/null || echo "1")
+
     echo ""
-    print_warning "Indexing timeout (${timeout}s) - still running in background"
-    print_info "Check status: docker logs vector-mcp-indexer"
-    return 1
+    if [ "$exit_code" = "0" ]; then
+        print_success "Indexing complete!"
+        return 0
+    else
+        print_error "Indexer failed with exit code: $exit_code"
+        return 1
+    fi
 }
 
 cleanup_indexing_services() {
