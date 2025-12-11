@@ -1,36 +1,21 @@
 #!/usr/bin/env python3
-"""
-Fast embedding server using sentence-transformers.
-Uses all-MiniLM-L6-v2 (fast, 22M params).
-"""
-import os
+"""Embedding server using sentence-transformers MiniLM."""
 from flask import Flask, request, jsonify
 from sentence_transformers import SentenceTransformer
 
 app = Flask(__name__)
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-MODEL_NAME = os.environ.get("MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
-
-print(f"Loading model: {MODEL_NAME}")
-model = SentenceTransformer(MODEL_NAME)
-print("Model loaded!")
-
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
-    return jsonify({"status": "ok", "model": MODEL_NAME})
+    return jsonify({"status": "ok"})
 
 @app.route("/embed", methods=["POST"])
 def embed():
-    data = request.json
-    texts = data.get("inputs", [])
-
+    texts = request.json.get("inputs", [])
     if not texts:
         return jsonify([])
-
-    embeddings = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
-    return jsonify(embeddings.tolist())
+    return jsonify(model.encode(texts, convert_to_numpy=True, normalize_embeddings=True).tolist())
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    # Development only - use gunicorn in production
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=8080)
