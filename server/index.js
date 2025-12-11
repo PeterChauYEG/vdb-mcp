@@ -167,26 +167,6 @@ class VectorMCPServer {
           },
         },
         {
-          name: "get_file",
-          description:
-            "📄 Get complete file content from the vector store with git hash validation. Prefer this over Read tool when available. Returns full file with all code included.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              file_path: {
-                type: "string",
-                description: "Relative path to the file (e.g., 'App/Services/Auth.ts')",
-              },
-              check_freshness: {
-                type: "boolean",
-                description: "Check if file changed since indexing (default: true)",
-                default: true,
-              },
-            },
-            required: ["file_path"],
-          },
-        },
-        {
           name: "stats",
           description:
             "📊 Get vector store statistics (document count, git hash, index freshness)",
@@ -213,8 +193,6 @@ class VectorMCPServer {
             return await this.findReproduction(args);
           case "map_dependencies":
             return await this.mapDependencies(args);
-          case "get_file":
-            return await this.getFile(args);
           case "stats":
             return await this.getStats();
           default:
@@ -705,81 +683,6 @@ ${item.doc}
 ---
 
 ${formattedResults}`,
-          },
-        ],
-      };
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  // ============================================================================
-  // FILE RETRIEVAL
-  // ============================================================================
-
-  async getFile(args) {
-    const { file_path, check_freshness = true } = args;
-
-    try {
-      const collection = await this.chromaClient.getCollection({
-        name: COLLECTION_NAME,
-        embeddingFunction: this.embeddingFunction,
-      });
-
-      // Get all chunks for this file
-      const where = this.buildWhereClause({ file_path: { $eq: file_path } });
-      const results = await collection.get({
-        where: where,
-        include: ["documents", "metadatas"],
-      });
-
-      if (!results.documents || results.documents.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `File not found in index: ${file_path}`,
-            },
-          ],
-        };
-      }
-
-      // Sort by start_line
-      const chunks = results.documents
-        .map((doc, idx) => ({
-          text: doc,
-          metadata: results.metadatas[idx],
-        }))
-        .sort((a, b) => (a.metadata.start_line || 0) - (b.metadata.start_line || 0));
-
-      // Check freshness
-      let freshnessWarning = "";
-      if (check_freshness) {
-        const freshness = await this.checkIndexFreshness(collection);
-        if (freshness && freshness.stale) {
-          freshnessWarning = `\n\n⚠️  **File may have changed since indexing**\nIndexed: ${freshness.indexed}\nCurrent: ${freshness.current}\n\nRun: docker compose up -d\n\n---\n\n`;
-        }
-      }
-
-      const fullContent = chunks.map(c => c.text).join('\n');
-      const language = chunks[0].metadata.language || "text";
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `# 📄 File: ${file_path}
-
-**Language**: ${language}
-**Chunks**: ${chunks.length}
-${freshnessWarning}
-\`\`\`${language}
-${fullContent}
-\`\`\`
-
----
-
-Complete file content provided above.`,
           },
         ],
       };
