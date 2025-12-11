@@ -32,4 +32,5 @@ def embed():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    # Development only - use gunicorn in production
+    app.run(host="0.0.0.0", port=port)

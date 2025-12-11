@@ -5,8 +5,8 @@ WORKDIR /app
 # Install PyTorch CPU version first
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-# Install sentence-transformers
-RUN pip install --no-cache-dir flask sentence-transformers
+# Install sentence-transformers and gunicorn for production
+RUN pip install --no-cache-dir flask sentence-transformers gunicorn
 
 COPY main.py .
 
@@ -15,4 +15,5 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 
 EXPOSE 8080
 
-CMD ["python", "main.py"]
+# Use gunicorn with preload to share model across workers
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "--preload", "main:app"]
