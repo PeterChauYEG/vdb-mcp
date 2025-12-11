@@ -17,7 +17,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Fast embedding server using sentence-transformers
+  # Embedding server using MiniLM (fast, 384 dims)
   embedding:
     build:
       context: ./embedding-server
@@ -25,8 +25,6 @@ services:
     container_name: vector-mcp-embedding
     ports:
       - "8081:8080"
-    environment:
-      - MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
       interval: 5s

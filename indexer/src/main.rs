@@ -1,9 +1,8 @@
-use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
+use std::collections::{HashMap, HashSet, BTreeMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -11,7 +10,6 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use rayon::prelude::*;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 // ============================================================================
 // Constants
@@ -113,12 +111,6 @@ const ALLOWED_NO_EXTENSION: &[&str] = &["Makefile", "Dockerfile", "Gemfile", "Ra
 // ============================================================================
 // File Utilities
 // ============================================================================
-
-fn hash_content(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    hex::encode(hasher.finalize())
-}
 
 fn should_index_file(path: &Path) -> bool {
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -315,11 +307,8 @@ pub struct ChunkMetadata {
     pub start_line: usize,
     pub end_line: usize,
     pub file_type: String,
-    pub content_hash: String,
-    pub file_hash: String,
     pub git_commit: String,
     pub git_branch: String,
-    pub indexed_at: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -339,7 +328,7 @@ impl CodeChunker {
         Self { git_commit, git_branch }
     }
 
-    pub fn chunk_code(&self, content: &str, file_path: &str, file_hash: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
+    pub fn chunk_code(&self, content: &str, file_path: &str, chunk_size: usize, overlap: usize) -> Vec<Chunk> {
         let lines: Vec<&str> = content.lines().collect();
         let mut chunks = Vec::new();
         let mut current_chunk: Vec<&str> = Vec::new();
@@ -352,7 +341,7 @@ impl CodeChunker {
             if current_size + line_size > chunk_size && !current_chunk.is_empty() {
                 let chunk_text = current_chunk.join("\n");
                 let end_line = start_line + current_chunk.len() - 1;
-                chunks.push(self.create_chunk(file_path, &chunk_text, file_hash, start_line, end_line));
+                chunks.push(self.create_chunk(file_path, &chunk_text, start_line, end_line));
 
                 let overlap_lines = self.get_overlap_lines(&current_chunk, overlap);
                 let overlap_count = overlap_lines.len();
@@ -368,13 +357,13 @@ impl CodeChunker {
         if !current_chunk.is_empty() {
             let chunk_text = current_chunk.join("\n");
             let end_line = start_line + current_chunk.len() - 1;
-            chunks.push(self.create_chunk(file_path, &chunk_text, file_hash, start_line, end_line));
+            chunks.push(self.create_chunk(file_path, &chunk_text, start_line, end_line));
         }
 
         chunks
     }
 
-    fn create_chunk(&self, file_path: &str, chunk_text: &str, file_hash: &str, start_line: usize, end_line: usize) -> Chunk {
+    fn create_chunk(&self, file_path: &str, chunk_text: &str, start_line: usize, end_line: usize) -> Chunk {
         let file_type = Path::new(file_path)
             .extension()
             .and_then(|e| e.to_str())
@@ -396,11 +385,8 @@ impl CodeChunker {
                 start_line,
                 end_line,
                 file_type,
-                content_hash: hash_content(chunk_text),
-                file_hash: file_hash.to_string(),
                 git_commit: self.git_commit.clone(),
                 git_branch: self.git_branch.clone(),
-                indexed_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
             },
         }
     }
@@ -434,8 +420,8 @@ struct ChromaCollection {
 struct ChromaAddRequest {
     ids: Vec<String>,
     embeddings: Vec<Vec<f32>>,
-    documents: Vec<String>,
     metadatas: Vec<serde_json::Value>,
+    // No documents - we read from files at query time to save storage
 }
 
 #[derive(Debug, Serialize)]
@@ -466,6 +452,7 @@ struct ChromaGetResponse {
     metadatas: Option<Vec<serde_json::Value>>,
 }
 
+#[derive(Clone)]
 pub struct ChromaClient {
     client: Client,
     base_url: String,
@@ -531,7 +518,6 @@ impl ChromaClient {
         let request = ChromaAddRequest {
             ids: chunks.iter().map(|c| c.id.clone()).collect(),
             embeddings,
-            documents: chunks.iter().map(|c| c.text.clone()).collect(),
             metadatas: chunks.iter().map(|c| serde_json::to_value(&c.metadata).unwrap()).collect(),
         };
 
@@ -821,13 +807,38 @@ impl CodebaseIndexer {
 
         println!("Generated {} chunks from {} files", all_chunks.len(), total_files);
 
-        for (batch_idx, chunk_batch) in all_chunks.chunks(batch_size).enumerate() {
-            println!("Embedding and uploading batch {}/{}...", batch_idx + 1, (all_chunks.len() + batch_size - 1) / batch_size);
+        let total_batches = (all_chunks.len() + batch_size - 1) / batch_size;
+        let batches: Vec<_> = all_chunks.chunks(batch_size).collect();
+
+        // Pipeline with crossbeam channel: embed in main thread, upload in background
+        use std::sync::mpsc;
+        use std::thread;
+
+        let (tx, rx) = mpsc::channel::<(Vec<Chunk>, Vec<Vec<f32>>, usize)>();
+
+        // Spawn upload thread
+        let chroma_clone = self.chroma.clone();
+        let upload_handle = thread::spawn(move || -> Result<()> {
+            while let Ok((chunks, embeddings, batch_num)) = rx.recv() {
+                chroma_clone.add_chunks(&chunks, embeddings)?;
+            }
+            Ok(())
+        });
+
+        // Main thread: embed and send to upload thread
+        for (batch_idx, chunk_batch) in batches.iter().enumerate() {
+            println!("Batch {}/{}", batch_idx + 1, total_batches);
 
             let texts: Vec<&str> = chunk_batch.iter().map(|c| c.text.as_str()).collect();
             let embeddings = self.embedding_client.encode(&texts)?;
-            self.chroma.add_chunks(chunk_batch, embeddings)?;
+            let chunks_owned: Vec<Chunk> = chunk_batch.to_vec();
+
+            tx.send((chunks_owned, embeddings, batch_idx + 1)).ok();
         }
+
+        // Signal completion and wait for uploads to finish
+        drop(tx);
+        upload_handle.join().map_err(|_| anyhow::anyhow!("Upload thread panicked"))??;
 
         println!("Indexing complete!");
         Ok(())
@@ -842,9 +853,8 @@ impl CodebaseIndexer {
         let content = fs::read_to_string(file_path).unwrap_or_default();
         if content.is_empty() { return Ok(Vec::new()); }
 
-        let file_hash = hash_content(&content);
         let relative_path = file_path.strip_prefix(base_directory).unwrap_or(file_path).to_string_lossy().to_string();
-        let chunks = self.chunker.chunk_code(&content, &relative_path, &file_hash, 3000, 500);
+        let chunks = self.chunker.chunk_code(&content, &relative_path, 3000, 500);
 
         Ok(chunks)
     }
@@ -875,7 +885,7 @@ struct IndexerArgs {
     port: String,
     #[arg(long, default_value = "codebase")]
     collection: String,
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 128)]
     batch_size: usize,
     #[arg(long, default_value_t = false)]
     no_incremental: bool,
