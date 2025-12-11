@@ -1,1 +1,0 @@
-"""Codebase indexer package."""

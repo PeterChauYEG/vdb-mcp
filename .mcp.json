@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "vector-search": {
+      "type": "stdio",
+      "command": "/Users/peterchau/src/vdb-mcp/mcp-server.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}

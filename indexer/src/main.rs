@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,6 +64,8 @@ const BINARY_EXTENSIONS: &[&str] = &[
     ".exe", ".dll", ".so", ".dylib", ".a", ".o", ".obj", ".bin",
     // Rust compiled
     ".rmeta", ".rlib",
+    // Perl XS compiled objects
+    ".os", ".bs",
     // Fonts
     ".ttf", ".otf", ".woff", ".woff2", ".eot",
     // Media
@@ -169,6 +171,65 @@ fn load_gitignore(directory: &Path) -> Option<Gitignore> {
         }
     }
     None
+}
+
+fn print_file_audit(files: &[PathBuf], base_dir: &Path) {
+    // Collect directories (relative, up to 2 levels deep)
+    let mut dir_counts: BTreeMap<String, usize> = BTreeMap::new();
+    // Collect extensions
+    let mut ext_counts: BTreeMap<String, usize> = BTreeMap::new();
+
+    for file in files {
+        // Get relative path
+        let rel_path = file.strip_prefix(base_dir).unwrap_or(file);
+
+        // Count top-level directories (1-2 levels)
+        let components: Vec<_> = rel_path.components().collect();
+        if components.len() > 1 {
+            let top_dir = components[0].as_os_str().to_string_lossy().to_string();
+            *dir_counts.entry(top_dir.clone()).or_insert(0) += 1;
+
+            // Also count 2-level deep for more detail
+            if components.len() > 2 {
+                let two_level = format!("{}/{}", top_dir, components[1].as_os_str().to_string_lossy());
+                *dir_counts.entry(two_level).or_insert(0) += 1;
+            }
+        } else {
+            *dir_counts.entry(".".to_string()).or_insert(0) += 1;
+        }
+
+        // Count extensions
+        let ext = file.extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_else(|| "(no ext)".to_string());
+        *ext_counts.entry(ext).or_insert(0) += 1;
+    }
+
+    println!("\n=== File Audit ===");
+
+    // Print top directories (sorted by count, descending)
+    println!("\nDirectories (file count):");
+    let mut dir_vec: Vec<_> = dir_counts.into_iter().collect();
+    dir_vec.sort_by(|a, b| b.1.cmp(&a.1));
+    for (dir, count) in dir_vec.iter().take(30) {
+        println!("  {:6}  {}", count, dir);
+    }
+    if dir_vec.len() > 30 {
+        println!("  ... and {} more directories", dir_vec.len() - 30);
+    }
+
+    // Print extensions (sorted by count, descending)
+    println!("\nExtensions (file count):");
+    let mut ext_vec: Vec<_> = ext_counts.into_iter().collect();
+    ext_vec.sort_by(|a, b| b.1.cmp(&a.1));
+    for (ext, count) in ext_vec.iter().take(20) {
+        println!("  {:6}  {}", count, ext);
+    }
+    if ext_vec.len() > 20 {
+        println!("  ... and {} more extensions", ext_vec.len() - 20);
+    }
+
+    println!();
 }
 
 // ============================================================================
@@ -648,6 +709,9 @@ impl CodebaseIndexer {
         };
 
         let (all_files, files_to_index) = self.scan_directory(directory, &indexed_files, max_file_size_mb)?;
+
+        // Print audit summary
+        print_file_audit(&all_files, directory);
 
         println!("Found {} total files", all_files.len());
         println!("Processing {} files", files_to_index.len());
