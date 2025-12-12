@@ -140,7 +140,7 @@ MCP_ROOT="$2"
 [ -d "\$MCP_ROOT" ] && {
     echo "🔄 Vector MCP: Re-indexing..."
     H=\$(git rev-parse HEAD); B=\$(git rev-parse --abbrev-ref HEAD)
-    [ -f "\$MCP_ROOT/.env" ] && { sed -i.bak "s/^GIT_HASH=.*/GIT_HASH=\$H/" "\$MCP_ROOT/.env"; sed -i.bak "s/^GIT_BRANCH=.*/GIT_BRANCH=\$B/" "\$MCP_ROOT/.env"; rm -f "\$MCP_ROOT/.env.bak"; }
+    [ -f "\$MCP_ROOT/.env" ] && { sed -i.bak "s|^GIT_HASH=.*|GIT_HASH=\$H|" "\$MCP_ROOT/.env"; sed -i.bak "s|^GIT_BRANCH=.*|GIT_BRANCH=\$B|" "\$MCP_ROOT/.env"; rm -f "\$MCP_ROOT/.env.bak"; }
     (cd "\$MCP_ROOT" && docker compose up -d chromadb && docker compose --profile index up -d embedding indexer > /dev/null 2>&1 &)
 }
 EOHOOK
@@ -153,7 +153,7 @@ create_git_hook() {
 MCP_ROOT="$2"
 echo "🔄 Vector MCP: Re-indexing codebase..."
 H=\$(git rev-parse HEAD); B=\$(git rev-parse --abbrev-ref HEAD)
-[ -f "\$MCP_ROOT/.env" ] && { sed -i.bak "s/^GIT_HASH=.*/GIT_HASH=\$H/" "\$MCP_ROOT/.env"; sed -i.bak "s/^GIT_BRANCH=.*/GIT_BRANCH=\$B/" "\$MCP_ROOT/.env"; rm -f "\$MCP_ROOT/.env.bak"; }
+[ -f "\$MCP_ROOT/.env" ] && { sed -i.bak "s|^GIT_HASH=.*|GIT_HASH=\$H|" "\$MCP_ROOT/.env"; sed -i.bak "s|^GIT_BRANCH=.*|GIT_BRANCH=\$B|" "\$MCP_ROOT/.env"; rm -f "\$MCP_ROOT/.env.bak"; }
 (cd "\$MCP_ROOT" && docker compose up -d chromadb && docker compose --profile index up -d embedding indexer > /dev/null 2>&1 &)
 EOF
     chmod +x "$1"
