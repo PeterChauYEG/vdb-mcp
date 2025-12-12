@@ -66,8 +66,10 @@ cleanup_indexing_services() {
 
 # Claude Code Configuration
 configure_claude() {
+    local codebase_path="$1"
+    local collection_name="$2"
     local project_root="$(cd "$SCRIPT_DIR" && pwd)"
-    local mcp_config="$1/.mcp.json"
+    local mcp_config="$codebase_path/.mcp.json"
     local mcp_server_script="$project_root/mcp-server.sh"
     [ -f "$mcp_server_script" ] || { print_error "mcp-server.sh not found"; return 1; }
     chmod +x "$mcp_server_script"
@@ -76,12 +78,17 @@ configure_claude() {
         python3 << PYEOF
 import json
 with open('$mcp_config', 'r') as f: config = json.load(f)
-config.setdefault('mcpServers', {})['vector-search'] = {'type': 'stdio', 'command': '$mcp_server_script', 'args': [], 'env': {}}
+config.setdefault('mcpServers', {})['vector-search'] = {
+    'type': 'stdio',
+    'command': '$mcp_server_script',
+    'args': ['--collection', '$collection_name', '--codebase', '$codebase_path'],
+    'env': {}
+}
 with open('$mcp_config', 'w') as f: json.dump(config, f, indent=2)
 PYEOF
     else
         cat > "$mcp_config" << EOF
-{"mcpServers": {"vector-search": {"type": "stdio", "command": "$mcp_server_script", "args": [], "env": {}}}}
+{"mcpServers": {"vector-search": {"type": "stdio", "command": "$mcp_server_script", "args": ["--collection", "$collection_name", "--codebase", "$codebase_path"], "env": {}}}}
 EOF
     fi
 }
